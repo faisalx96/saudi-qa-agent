@@ -292,59 +292,23 @@ def run_saudi_agent_sync(question: str, trace_name: Optional[str] = None, user_i
     import asyncio
     
     if LANGFUSE_ENABLED and langfuse_client:
-        # Check if we're already in a trace context (e.g., from evaluation library)
-        try:
-            # Try to get current trace ID - if this returns a value, we're already in a trace
-            current_trace_id = langfuse_client.get_current_trace_id()
-            print(f"DEBUG: current_trace_id = {current_trace_id}")
-            
-            # Also try to get current observation ID as another way to detect context
-            try:
-                obs_id = langfuse_client.get_current_observation_id()
-                print(f"DEBUG: current_observation_id = {obs_id}")
-            except:
-                print("DEBUG: no get_current_observation_id method or no observation")
-            
-            if current_trace_id:
-                # We're already in a trace context, just run without any additional tracing
-                # The @observe decorators will automatically creSate spans within the existing trace
-                print("Already in trace context, using existing trace")
-                result = asyncio.run(run_saudi_agent(question, trace_name, user_id, session_id, metadata))
-                return result
-        except Exception as e:
-            print("ERROR:", e)
-            # No current trace or method doesn't exist, proceed to create one
-            pass
-        
-        # Create a trace using v3 API only if not already in trace context
+        # Create a root span so @observe decorators have context to attach to
         with langfuse_client.start_as_current_span(
             name=trace_name or f"saudi_agent_{config.OPENAI_MODEL}"
         ) as span:
-            # Update trace attributes
-            span.update_trace(
-                user_id="Terminal Agent",
-                session_id=session_id,
-                metadata=metadata or {},
-                input=question
-            )
-            
-            # Run the agent
             result = asyncio.run(run_saudi_agent(question, trace_name, user_id, session_id, metadata))
-            
-            # Update the trace with the output
-            span.update_trace(
-                output=result['final_answer'],
+            # Update the root span with key info
+            span.update(
+                input={"question": question},
+                output=result.get('final_answer', ''),
                 metadata={
                     **(metadata or {}),
                     "is_saudi_question": result.get("is_saudi_question"),
-                    "answer_length": len(result.get("final_answer", "")),
                     "model": config.OPENAI_MODEL
                 }
             )
-        
-        return result
+            return result
     else:
-        print("WHAAAAAAAAAAAAT?")
         # Run without tracing if Langfuse is not available
         return asyncio.run(run_saudi_agent(question, trace_name, user_id, session_id, metadata))
 
