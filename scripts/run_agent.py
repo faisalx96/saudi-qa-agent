@@ -45,59 +45,83 @@ def check_environment():
 
 def display_result(result: dict):
     """Display the agent result in a nice format"""
-    console.print("\n" + "="*80)
-    
-    # Question and classification
-    console.print(f"[bold cyan]Question:[/bold cyan] {result['question']}")
-    
     is_saudi = result.get('is_saudi_question', False)
-    if is_saudi:
-        console.print(f"[bold green]✓ Identified as Saudi Arabia question[/bold green]")
-    else:
-        console.print(f"[bold yellow]✗ Not a Saudi Arabia question[/bold yellow]")
     
-    # Show step execution
-    console.print("\n[bold]Steps Executed:[/bold]")
-    steps_table = Table(show_header=True, header_style="bold magenta")
-    steps_table.add_column("Step", style="cyan")
-    steps_table.add_column("Status", style="green")
-    steps_table.add_column("Details")
-    
-    for step_name, step_data in result.get('step_outputs', {}).items():
-        output = step_data.get('output', 'No output')
-        if isinstance(output, bool):
-            output = "✓" if output else "✗"
-        elif len(str(output)) > 50:
-            output = str(output)[:50] + "..."
-        steps_table.add_row(step_name.capitalize(), "Completed", str(output))
-    
-    console.print(steps_table)
-    
-    # Final answer
-    console.print("\n[bold]Answer:[/bold]")
+    # Create a nice answer box
     answer_panel = Panel(
         result.get('final_answer', 'No answer generated'),
         style="green" if is_saudi else "yellow",
-        title="Agent Response"
+        title=f"💬 Answer - {'Saudi Arabia Question ✓' if is_saudi else 'Not a Saudi Question ✗'}",
+        border_style="green" if is_saudi else "yellow",
+        expand=False
     )
     console.print(answer_panel)
-    
-    # Search results summary (if available)
-    if result.get('search_results') and len(result['search_results']) > 10:
-        console.print("\n[dim]Search performed and found relevant information[/dim]")
 
 
 def run_single_question(question: str):
-    """Run the agent with a single question"""
-    console.print(f"\n[bold]Processing your question...[/bold]")
+    """Run the agent with a single question with real-time progress"""
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+    from rich.console import Group
+    from rich.panel import Panel
+    from rich.rule import Rule
+    import time
     
-    try:
-        result = run_saudi_agent_sync(question)
-        display_result(result)
-        return result
-    except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
-        return None
+    console.print("")  # Just add some spacing
+    
+    # Create progress bars for each step
+    with Progress(
+        SpinnerColumn(spinner_name="dots"),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(bar_width=30),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        console=console,
+        transient=False,  # Keep progress visible
+    ) as progress:
+        
+        # Add tasks
+        verify_task = progress.add_task("[cyan]Verifying question type", total=100)
+        search_task = progress.add_task("[dim]Searching for information", total=100)
+        answer_task = progress.add_task("[dim]Generating answer", total=100)
+        
+        try:
+            # Start verification
+            progress.update(verify_task, advance=20)
+            time.sleep(0.1)
+            
+            # Run the agent
+            start_time = time.time()
+            result = run_saudi_agent_sync(question)
+            
+            # Complete verification
+            is_saudi = result.get('is_saudi_question', False)
+            progress.update(verify_task, completed=100, description=f"[green]✓ Verified: {'Saudi Arabia question' if is_saudi else 'Not a Saudi question'}")
+            
+            if is_saudi:
+                # Search progress
+                progress.update(search_task, advance=50, description="[yellow]Searching for information...")
+                time.sleep(0.2)
+                progress.update(search_task, completed=100, description="[green]✓ Search completed")
+                
+                # Answer generation
+                progress.update(answer_task, advance=50, description="[yellow]Generating answer...")
+                time.sleep(0.2)
+                progress.update(answer_task, completed=100, description="[green]✓ Answer generated")
+            else:
+                # Skip search for non-Saudi questions
+                progress.update(search_task, completed=100, description="[dim]⏭ Search skipped")
+                progress.update(answer_task, completed=100, description="[green]✓ Standard response provided")
+            
+            # Brief pause to show completion
+            time.sleep(0.5)
+            
+        except Exception as e:
+            console.print(f"\n[red]Error: {e}[/red]")
+            return None
+    
+    # Display full results after progress completes
+    console.print("")  # Add spacing
+    display_result(result)
+    return result
 
 
 def interactive_mode():
@@ -118,7 +142,7 @@ def interactive_mode():
     
     while True:
         try:
-            question = console.input("[bold cyan]Your question:[/bold cyan] ").strip()
+            question = console.input("\n[bold cyan]Your question:[/bold cyan] ").strip()
             
             if question.lower() in ['exit', 'quit', 'q']:
                 console.print("\n[yellow]Goodbye! 👋[/yellow]")
@@ -129,7 +153,6 @@ def interactive_mode():
                 continue
             
             run_single_question(question)
-            console.print("\n" + "-"*80 + "\n")
             
         except KeyboardInterrupt:
             console.print("\n\n[yellow]Interrupted. Goodbye! 👋[/yellow]")

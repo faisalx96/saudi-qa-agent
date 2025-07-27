@@ -8,7 +8,7 @@ This agent answers questions about Saudi Arabia through a 3-step process:
 """
 
 import os
-from typing import Dict, Any, Literal
+from typing import Dict, Any, Literal, Optional
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
@@ -20,6 +20,38 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import config
 
+# Langfuse tracing imports
+try:
+    from langfuse import Langfuse, observe, get_client
+    LANGFUSE_AVAILABLE = True
+except ImportError as e:
+    print(f"Langfuse import error: {e}")
+    LANGFUSE_AVAILABLE = False
+    # Create dummy decorators if Langfuse is not available
+    def observe(name=None, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+    def get_client():
+        return None
+
+# Initialize Langfuse only if available and configured
+if LANGFUSE_AVAILABLE and config.LANGFUSE_PUBLIC_KEY and config.LANGFUSE_SECRET_KEY:
+    try:
+        # Use direct initialization to match evaluation library pattern
+        langfuse_client = Langfuse(
+            public_key=config.LANGFUSE_PUBLIC_KEY,
+            secret_key=config.LANGFUSE_SECRET_KEY,
+            host=config.LANGFUSE_HOST
+        )
+        LANGFUSE_ENABLED = True
+    except Exception as e:
+        print(f"Langfuse initialization error: {e}")
+        LANGFUSE_ENABLED = False
+        langfuse_client = None
+else:
+    LANGFUSE_ENABLED = False
+    langfuse_client = None
 
 class SaudiArabiaAgentState:
     """State for the Saudi Arabia Q&A agent"""
@@ -31,6 +63,7 @@ class SaudiArabiaAgentState:
         self.step_outputs: Dict[str, Any] = {}
 
 
+@observe(name="verify_saudi_question")
 def verify_saudi_question(state: Dict[str, Any]) -> Dict[str, Any]:
     """
     Node 1: Verify if the question is about Saudi Arabia
@@ -71,6 +104,7 @@ def verify_saudi_question(state: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+@observe(name="search_web")
 def search_web(state: Dict[str, Any]) -> Dict[str, Any]:
     """
     Node 2: Search the web for information about Saudi Arabia
@@ -134,6 +168,7 @@ def search_web(state: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+@observe(name="generate_answer")
 def generate_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     """
     Node 3: Generate final answer based on search results
@@ -219,12 +254,16 @@ def create_saudi_arabia_agent():
     return app
 
 
-async def run_saudi_agent(question: str) -> Dict[str, Any]:
+async def run_saudi_agent(question: str, trace_name: Optional[str] = None, user_id: Optional[str] = None, session_id: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Run the Saudi Arabia agent with a question
     
     Args:
         question: The question to ask about Saudi Arabia
+        trace_name: Optional name for the Langfuse trace
+        user_id: Optional user ID for tracing
+        session_id: Optional session ID for tracing
+        metadata: Optional metadata for the trace
         
     Returns:
         Complete state with all step outputs and final answer
@@ -248,10 +287,66 @@ async def run_saudi_agent(question: str) -> Dict[str, Any]:
 
 
 # Synchronous wrapper for compatibility
-def run_saudi_agent_sync(question: str) -> Dict[str, Any]:
-    """Synchronous wrapper for the Saudi Arabia agent"""
+def run_saudi_agent_sync(question: str, trace_name: Optional[str] = None, user_id: Optional[str] = None, session_id: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Synchronous wrapper for the Saudi Arabia agent with Langfuse tracing"""
     import asyncio
-    return asyncio.run(run_saudi_agent(question))
+    
+    if LANGFUSE_ENABLED and langfuse_client:
+        # Check if we're already in a trace context (e.g., from evaluation library)
+        try:
+            # Try to get current trace ID - if this returns a value, we're already in a trace
+            current_trace_id = langfuse_client.get_current_trace_id()
+            print(f"DEBUG: current_trace_id = {current_trace_id}")
+            
+            # Also try to get current observation ID as another way to detect context
+            try:
+                obs_id = langfuse_client.get_current_observation_id()
+                print(f"DEBUG: current_observation_id = {obs_id}")
+            except:
+                print("DEBUG: no get_current_observation_id method or no observation")
+            
+            if current_trace_id:
+                # We're already in a trace context, just run without any additional tracing
+                # The @observe decorators will automatically creSate spans within the existing trace
+                print("Already in trace context, using existing trace")
+                result = asyncio.run(run_saudi_agent(question, trace_name, user_id, session_id, metadata))
+                return result
+        except Exception as e:
+            print("ERROR:", e)
+            # No current trace or method doesn't exist, proceed to create one
+            pass
+        
+        # Create a trace using v3 API only if not already in trace context
+        with langfuse_client.start_as_current_span(
+            name=trace_name or f"saudi_agent_{config.OPENAI_MODEL}"
+        ) as span:
+            # Update trace attributes
+            span.update_trace(
+                user_id="Terminal Agent",
+                session_id=session_id,
+                metadata=metadata or {},
+                input=question
+            )
+            
+            # Run the agent
+            result = asyncio.run(run_saudi_agent(question, trace_name, user_id, session_id, metadata))
+            
+            # Update the trace with the output
+            span.update_trace(
+                output=result['final_answer'],
+                metadata={
+                    **(metadata or {}),
+                    "is_saudi_question": result.get("is_saudi_question"),
+                    "answer_length": len(result.get("final_answer", "")),
+                    "model": config.OPENAI_MODEL
+                }
+            )
+        
+        return result
+    else:
+        print("WHAAAAAAAAAAAAT?")
+        # Run without tracing if Langfuse is not available
+        return asyncio.run(run_saudi_agent(question, trace_name, user_id, session_id, metadata))
 
 
 if __name__ == "__main__":
