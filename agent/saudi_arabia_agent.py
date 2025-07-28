@@ -35,24 +35,6 @@ except ImportError as e:
     def get_client():
         return None
 
-# Initialize Langfuse only if available and configured
-if LANGFUSE_AVAILABLE and config.LANGFUSE_PUBLIC_KEY and config.LANGFUSE_SECRET_KEY:
-    try:
-        # Use direct initialization to match evaluation library pattern
-        langfuse_client = Langfuse(
-            public_key=config.LANGFUSE_PUBLIC_KEY,
-            secret_key=config.LANGFUSE_SECRET_KEY,
-            host=config.LANGFUSE_HOST
-        )
-        LANGFUSE_ENABLED = True
-    except Exception as e:
-        print(f"Langfuse initialization error: {e}")
-        LANGFUSE_ENABLED = False
-        langfuse_client = None
-else:
-    LANGFUSE_ENABLED = False
-    langfuse_client = None
-
 class SaudiArabiaAgentState:
     """State for the Saudi Arabia Q&A agent"""
     def __init__(self):
@@ -290,28 +272,8 @@ async def run_saudi_agent(question: str, trace_name: Optional[str] = None, user_
 def run_saudi_agent_sync(question: str, trace_name: Optional[str] = None, user_id: Optional[str] = None, session_id: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Synchronous wrapper for the Saudi Arabia agent with Langfuse tracing"""
     import asyncio
-    
-    if LANGFUSE_ENABLED and langfuse_client:
-        # Create a root span so @observe decorators have context to attach to
-        with langfuse_client.start_as_current_span(
-            name=trace_name or f"saudi_agent_{config.OPENAI_MODEL}"
-        ) as span:
-            result = asyncio.run(run_saudi_agent(question, trace_name, user_id, session_id, metadata))
-            # Update the root span with key info
-            span.update(
-                input={"question": question},
-                output=result.get('final_answer', ''),
-                metadata={
-                    **(metadata or {}),
-                    "is_saudi_question": result.get("is_saudi_question"),
-                    "model": config.OPENAI_MODEL
-                }
-            )
-            return result
-    else:
-        # Run without tracing if Langfuse is not available
-        return asyncio.run(run_saudi_agent(question, trace_name, user_id, session_id, metadata))
-
+    result = asyncio.run(run_saudi_agent(question, trace_name, user_id, session_id, metadata))
+    return result
 
 if __name__ == "__main__":
     # Test the agent

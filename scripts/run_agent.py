@@ -24,7 +24,13 @@ from rich.panel import Panel
 from rich.text import Text
 from rich.table import Table
 import json
+from langfuse import Langfuse
 
+langfuse = Langfuse(
+            public_key="pk-lf-c542f0f6-77fb-4704-b114-006fa90f5c0c",
+            secret_key="sk-lf-219a7622-1acd-4e3b-8fba-d31f4e0dfe87",
+            host="https://cloud.langfuse.com"
+        )
 
 console = Console()
 
@@ -90,7 +96,13 @@ def run_single_question(question: str):
             
             # Run the agent
             start_time = time.time()
-            result = run_saudi_agent_sync(question)
+            with langfuse.start_as_current_span(
+                    name="KSA QA Agent"
+            ) as root_span:
+                root_span.update(input=question)
+                result = run_saudi_agent_sync(question)
+                root_span.update(output=result['final_answer'])
+                root_span.update(metadata=result['step_outputs'])
             
             # Complete verification
             is_saudi = result.get('is_saudi_question', False)
